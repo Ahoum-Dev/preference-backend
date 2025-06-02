@@ -1,0 +1,118 @@
+Prompt for Cursor IDE – Build the Ahoum Preference Memory Backend
+
+Goal Create a production-ready micro-service that ingests a seeker⇄AI conversation (JSON schema below), extracts long-term user preferences with Graphiti, stores them in Neo4j, and exposes two REST endpoints:
+	•	POST /ingest_conversation – adds the dialogue as a Graphiti Episode.
+	•	POST /next_question – returns the next dynamic question using context from Graphiti + the LLM.
+
+Everything must run locally / self-hosted: open-source LLM via an OpenAI-compatible endpoint (e.g. Ollama, Vertex AI Chat-Completions proxy, or FastChat). No paid SaaS calls.
+
+Use FastAPI + Uvicorn (async) instead of Flask (better typing, easier dependency injection). Package management via Poetry.
+
+⸻
+
+0  Conversation JSON (input contract)
+
+{
+  "uid": "1234567890",
+  "conversation": [
+    {"speaker": "AI",   "text": "Hi there! What’s on your mind today?"},
+    {"speaker": "User", "text": "Honestly, I’ve been feeling anxious about my exams."},
+    … up to ≈10 turns …
+  ],
+  "conversation_id": "1234567890",
+  "created_at": "2025-06-02T12:00:00Z",
+  "updated_at": "2025-06-02T12:00:00Z"
+}
+
+
+⸻
+
+1  High-level requirements
+	1.	Ingestion – wrap Graphiti Python client: graphiti_core.Graphiti.add_episode(…) to parse & insert the conversation as an Episode with temporal metadata. ➜ episodes enable provenance queries (help.getzep.com)
+	2.	LLM client – use graphiti_core.llm_client.OpenAIGenericClient with env vars:
+	•	OPENAI_API_BASE = http://localhost:11434/v1 (Ollama) ➜ OpenAI-compat (ollama.com, github.com)
+	•	OPENAI_API_KEY = dummy sk-local
+	•	MODEL_NAME    = mistral:7b (or another local tag)
+	3.	Google Gemini option – document that OPENAI_API_BASE can point at a Gemini Chat-Completions proxy on Vertex AI ✔︎ OpenAI-compat support (cloud.google.com)
+	4.	Graph DB – Neo4j 5.x Community via Docker; respect hardware guidelines (2 GB heap for dev) (neo4j.com)
+	5.	Hybrid search – enable Graphiti’s default RRF/BM25 + vector recipe; requires embedding model env EMBEDDING_MODEL_NAME=bge-m3 (local HF model). Graphiti supports custom embedders (deepwiki.com)
+	6.	Config via .env – Parse with python-dotenv. Mandatory vars: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, OPENAI_API_BASE, MODEL_NAME, EMBEDDING_MODEL_NAME.
+	7.	Containerisation – single docker-compose.yml spins up api, neo4j, and optional ollama.
+	8.	Unit tests – Pytest fixture spins a Neo4j TestContainer; mock LLM with respx recorder.
+
+⸻
+
+2  Folder layout
+
+preference-backend/
+├─ app/
+│  ├─ main.py          # FastAPI app factory
+│  ├─ graphiti_client.py
+│  ├─ routes/
+│  │    ├─ ingest.py   # /ingest_conversation
+│  │    └─ questions.py# /next_question
+│  ├─ models/          # Pydantic schemas
+│  └─ utils.py
+├─ tests/
+├─ Dockerfile
+├─ docker-compose.yml
+├─ pyproject.toml
+└─ .env.example
+
+
+⸻
+
+3  Cursor-friendly task list (chronological)
+	1.	Scaffold project
+	•	poetry init – name preference-backend, Python ^3.11
+	•	Add deps: fastapi, uvicorn[standard], python-dotenv, graphiti==*, neo4j, pydantic, httpx, loguru.
+	2.	Implement graphiti_client.py
+	•	Initialise Graphiti singleton with env vars ➜ Graphiti readme (github.com)
+	•	Provide helper add_episode(uid: str, conv: list[dict]) -> EpisodeNode.
+	3.	Create Pydantic models (ConversationIn, QuestionOut).
+	4.	Route /ingest_conversation
+	•	Validate JSON → call graphiti_client.add_episode.
+	•	Return {"status":"ok","episode_id": …}.
+	5.	Route /next_question
+	•	Retrieve last N preferences via Graphiti search recipe (NODE_HYBRID_SEARCH_RRF). (blog.getzep.com)
+	•	Craft prompt to local LLM to propose next dynamic question.
+	6.	Dockerfile & compose
+	•	Multi-stage: base python → pip install → copy code.
+	•	Services: api (port 8000), neo4j (7687,7474), ollama (11434).
+	7.	CI – minimal GitHub Actions matrix (python 3.11).
+
+⸻
+
+4  Acceptance criteria
+	•	Hit /ingest_conversation with sample JSON; get 201 + episode_id.
+	•	Neo4j browser MATCH (u:User {uid:"1234567890"})-[:LIKES]->(n) returns ≥1 preference node. ➜ Verified via bolt.
+	•	/next_question returns a JSON question string in < 1200 ms on 8-core CPU.
+
+⸻
+
+5  Edge cases & bug guards
+	•	If LLM fails JSON compliance → retry once with Graphiti structured-output fixer flag (ollama.com)
+	•	Timeouts: set GRAPHITI_LLM_TIMEOUT=25 s.
+	•	Use backoff decorator on Neo4j Bolt connect (cold-start race).
+
+⸻
+
+6  References (for Cursor but keep inline docs concise)
+	•	Cursor memory blog post (blog.getzep.com)
+	•	Graphiti GitHub repo & env vars (github.com)
+	•	Graphiti quick-start example (github.com)
+	•	Graphiti docs add episodes (help.getzep.com)
+	•	Graph Service env var list (deepwiki.com)
+	•	Graphiti MCP server quick-start (github.com)
+	•	Ollama OpenAI compatibility (ollama.com)
+	•	Issue #337 (Ollama embedder example) (github.com)
+	•	Vertex AI Chat-Completions OpenAI shim (cloud.google.com)
+	•	Neo4j hardware reqs (neo4j.com)
+
+⸻
+
+Instruction to Cursor
+
+You are an AI pair-programmer. Follow the spec above. Generate files exactly into the defined paths. Aim for clean, typed async code, full docstrings, and minimal dependencies. Ensure all environment variables in .env.example are actually read via python-dotenv. Include a README.md (autogenerated) summarising run commands.
+
+Once done, run the quick integration test (tests/test_ingest.py) to ensure the FastAPI server returns HTTP 201.
