@@ -1,10 +1,14 @@
 import os
 import httpx
+import json
+import re
 from neo4j import GraphDatabase
+from loguru import logger
 # Attempt to import Graphiti client and LLM client, with stubs if unavailable
 try:
     from graphiti_core import Graphiti
     from graphiti_core.llm_client import OpenAIGenericClient
+    _USE_GRAPHITI = True
 except ImportError:
     class OpenAIGenericClient:
         def __init__(self, *args, **kwargs):
@@ -19,6 +23,7 @@ except ImportError:
             class Episode:
                 id = uid
             return Episode()
+    _USE_GRAPHITI = False
 
 # Environment variables
 NEO4J_URI = os.getenv("NEO4J_URI")
@@ -26,7 +31,7 @@ NEO4J_USER = os.getenv("NEO4J_USER")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME")
+MODEL_NAME = os.getenv("NEBIUS_MODEL_NAME")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME")
 GRAPHITI_LLM_TIMEOUT = int(os.getenv("GRAPHITI_LLM_TIMEOUT", "25"))
 
@@ -44,36 +49,98 @@ driver = GraphDatabase.driver(
     auth=(NEO4J_USER, NEO4J_PASSWORD),
 )
 
+# Initialize Graphiti client if available
+if _USE_GRAPHITI:
+    graphiti = Graphiti(driver=driver, llm_client=llm_client, embedding_model_name=EMBEDDING_MODEL_NAME)
+else:
+    graphiti = None
+
 def add_episode(uid: str, conv: list[dict]) -> str:
     """
-    Ingests a conversation as a Graphiti Episode.
+    Ingests a conversation as a Graphiti Episode and extracts multiple relationships.
 
     Returns the episode id.
     """
-    # Write to Neo4j directly
-    episode_id = uid
-    with driver.session() as session:
-        session.run(
-            "MERGE (u:User {uid:$uid})", uid=uid
-        )
-        session.run(
-            "CREATE (e:Episode {id:$episode_id})", episode_id=episode_id
-        )
-        session.run(
-            "MATCH (u:User {uid:$uid}), (e:Episode {id:$episode_id}) MERGE (u)-[:CREATED]->(e)",
-            uid=uid, episode_id=episode_id,
-        )
-        for turn in conv:
-            if turn.get("speaker") == "User":
-                text = turn.get("text","")
-                session.run(
-                    "MERGE (p:Preference {text:$text})", text=text
+    logger.info(f"add_episode called with uid={uid}, num_turns={len(conv)}, USE_GRAPHITI={_USE_GRAPHITI}")
+    if not _USE_GRAPHITI:
+        logger.info(f"Using fallback manual ingestion for uid={uid}")
+        with driver.session() as session:
+            # Log raw user texts
+            logger.debug(f"User turns: {[t.get('text','') for t in conv if t.get('speaker')=='User']}")
+            # Ensure user node exists
+            session.run("MERGE (u:User {uid:$uid})", uid=uid)
+            # Prepare user-only text for LLM
+            conv_text = "\n".join([t.get("text", "") for t in conv if t.get("speaker") == "User"])
+            logger.debug(f"conv_text for LLM: {conv_text}")
+            # Ask LLM to extract relationships
+            logger.info(f"Sending LLM request to {OPENAI_API_BASE}/chat/completions")
+            chat_payload = {
+                "model": MODEL_NAME,
+                "messages": [
+                    {"role": "system", "content": "Extract relationships from this user conversation. Output JSON list of objects with fields 'relation', 'object', and 'object_type'."},
+                    {"role": "user", "content": conv_text},
+                ],
+                "max_tokens": 500,
+                "temperature": 0,
+            }
+            try:
+                resp = httpx.post(
+                    f"{OPENAI_API_BASE}/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    json=chat_payload,
                 )
+            except Exception as e:
+                logger.error(f"LLM request failed for uid={uid}: {e}")
+                raise
+            resp.raise_for_status()
+            logger.debug(f"LLM response status: {resp.status_code}")
+            content = resp.json()["choices"][0]["message"]["content"]
+            logger.debug(f"LLM response content: {content}")
+            # Extract JSON array from LLM output
+            start = content.find('[')
+            end = content.rfind(']')
+            if start != -1 and end != -1 and end > start:
+                json_str = content[start:end+1]
+                logger.debug(f"Extracted JSON string for parsing: {json_str}")
+                try:
+                    rels = json.loads(json_str)
+                except Exception as e:
+                    logger.error(f"JSON parse error: {e}; json_str: {json_str}")
+                    rels = []
+            else:
+                logger.error(f"No JSON array found in LLM output: {content}")
+                rels = []
+            logger.debug(f"Extracted relationships: {rels}")
+            # Create nodes and relationships based on LLM output
+            rel_count = 0
+            for rel in rels:
+                # Sanitize relationship type: replace non-alphanumeric with underscore
+                raw_rel = rel.get("relation", "REL")
+                rel_type = re.sub(r"\W+", "_", raw_rel).upper()
+                # Sanitize object label (capitalize, no spaces)
+                raw_obj_type = rel.get("object_type", "Preference")
+                obj_type = raw_obj_type.strip().replace(' ', '_').capitalize()
+                obj = rel.get("object", "")
+                logger.info(f"Creating relationship {uid}-[:{rel_type}]->{obj_type}({obj})")
+                # Merge object node
+                session.run(f"MERGE (o:{obj_type} {{name:$obj}})", obj=obj)
+                # Link user to object with sanitized rel_type
                 session.run(
-                    "MATCH (u:User {uid:$uid}), (p:Preference {text:$text}) MERGE (u)-[:LIKES]->(p)",
-                    uid=uid, text=text,
+                    f"MATCH (u:User {{uid:$uid}}), (o:{obj_type} {{name:$obj}}) MERGE (u)-[:{rel_type}]->(o)",
+                    uid=uid, obj=obj,
                 )
-    return episode_id
+                rel_count += 1
+            logger.info(f"Total relationships created for uid={uid}: {rel_count}")
+        return uid
+    # Use Graphiti to ingest conversation and extract relationships into Neo4j
+    logger.info(f"Using Graphiti ingestion for uid={uid}")
+    try:
+        episode = graphiti.add_episode(uid=uid, conversation=conv)
+    except Exception as e:
+        logger.error(f"Graphiti.add_episode failed for uid={uid}: {e}")
+        raise
+    logger.info(f"Graphiti.add_episode returned episode_id={episode.id}")
+    return episode.id
 
 # Add LLM-based question generation and Graphiti preference search
 SYSTEM_PROMPT = "You are a helpful assistant that generates the next follow-up question to learn about user preferences. Only output the question."
