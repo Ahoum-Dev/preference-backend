@@ -35,6 +35,12 @@ MODEL_NAME = os.getenv("NEBIUS_MODEL_NAME")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME")
 GRAPHITI_LLM_TIMEOUT = int(os.getenv("GRAPHITI_LLM_TIMEOUT", "25"))
 
+# Honor USE_GRAPHITI override: set to "false" to disable Graphiti core ingestion and use manual fallback
+USE_GRAPHITI_ENV = os.getenv("USE_GRAPHITI", "true").lower() in ("true","1","yes")
+if not USE_GRAPHITI_ENV:
+    logger.info("USE_GRAPHITI environment flag is false; disabling Graphiti core ingestion.")
+    _USE_GRAPHITI = False
+
 # Initialize LLM client
 llm_client = OpenAIGenericClient(
     base_url=OPENAI_API_BASE,
@@ -69,16 +75,26 @@ def add_episode(uid: str, conv: list[dict]) -> str:
             logger.debug(f"User turns: {[t.get('text','') for t in conv if t.get('speaker')=='User']}")
             # Ensure user node exists
             session.run("MERGE (u:User {uid:$uid})", uid=uid)
-            # Prepare user-only text for LLM
-            conv_text = "\n".join([t.get("text", "") for t in conv if t.get("speaker") == "User"])
-            logger.debug(f"conv_text for LLM: {conv_text}")
+            # Prepare full conversation with speaker labels for LLM
+            conv_formatted = "\n".join([f"{turn.get('speaker')}: {turn.get('text','')}" for turn in conv])
+            logger.debug(f"conv_formatted for LLM: {conv_formatted}")
             # Ask LLM to extract relationships
+            # Validate LLM endpoint and credentials
+            if not OPENAI_API_BASE or not OPENAI_API_KEY:
+                logger.error(f"Missing OPENAI_API_BASE or OPENAI_API_KEY; skipping LLM request for uid={uid}")
+                return uid
             logger.info(f"Sending LLM request to {OPENAI_API_BASE}/chat/completions")
+            system_instruction = (
+                "You are a relationship extraction assistant. "
+                "Given the full conversation between 'AI' and 'User', extract all distinct relationships "
+                "the user expresses, including emotions, problems, actions, preferences, and coping strategies. "
+                "Output a JSON array of objects with fields: 'relation', 'object', 'object_type'."
+            )
             chat_payload = {
                 "model": MODEL_NAME,
                 "messages": [
-                    {"role": "system", "content": "Extract relationships from this user conversation. Output JSON list of objects with fields 'relation', 'object', and 'object_type'."},
-                    {"role": "user", "content": conv_text},
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": conv_formatted},
                 ],
                 "max_tokens": 500,
                 "temperature": 0,
@@ -88,10 +104,11 @@ def add_episode(uid: str, conv: list[dict]) -> str:
                     f"{OPENAI_API_BASE}/chat/completions",
                     headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
                     json=chat_payload,
+                    timeout=GRAPHITI_LLM_TIMEOUT,
                 )
             except Exception as e:
                 logger.error(f"LLM request failed for uid={uid}: {e}")
-                raise
+                return uid
             resp.raise_for_status()
             logger.debug(f"LLM response status: {resp.status_code}")
             content = resp.json()["choices"][0]["message"]["content"]
