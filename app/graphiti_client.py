@@ -218,4 +218,31 @@ def get_preferences(uid: str, top_k: int = 5) -> list[str]:
             "MATCH (u:User {uid:$uid})-[:LIKES]->(p:Preference) RETURN p.text AS text LIMIT $k",
             uid=uid, k=top_k,
         )
-        return [record["text"] for record in result] 
+        return [record["text"] for record in result]
+
+# --------------- Additional commented-out preference retrieval strategies ---------------
+# def get_preferences_by_recent_conversations(uid: str, num_conversations: int = 2) -> list[str]:
+#     """
+#     Retrieve preferences from the last `num_conversations` episodes for a user.
+#     """
+#     with driver.session() as session:
+#         # Assume Episode nodes have a `created_at` property
+#         result = session.run(
+#             """
+#             MATCH (u:User {uid:$uid})-[:CREATED]->(e:Episode)
+#             WITH e ORDER BY e.created_at DESC LIMIT $n
+#             MATCH (e)-[]->(p:Preference)
+#             RETURN p.text AS text
+#             """,
+#             uid=uid, n=num_conversations
+#         )
+#         return [record["text"] for record in result]
+#
+# def get_preferences_with_context(uid: str, previous_question: str, top_k: int = 5) -> list[str]:
+#     """
+#     Retrieve top_k preferences using vector search based on previous question context.
+#     """
+#     # Example using Graphiti hybrid search recipe:
+#     # prefs = graphiti.search_preferences(uid=uid, context=previous_question, top_k=top_k)
+#     # return prefs
+#     pass 
