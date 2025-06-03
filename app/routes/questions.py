@@ -15,7 +15,7 @@ async def next_question(payload: NextQuestionIn):
         question_text = await graphiti_client.generate_next_question(preferences=prefs)
         return QuestionOut(question=question_text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) 
 
 # --------------- Commented-out alternative route for context-aware question generation ---------------
 # from app.models.question_request_with_context import NextQuestionWithContextIn

@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 import httpx
 import json
 import re
@@ -60,6 +61,9 @@ if _USE_GRAPHITI:
     graphiti = Graphiti(driver=driver, llm_client=llm_client, embedding_model_name=EMBEDDING_MODEL_NAME)
 else:
     graphiti = None
+
+# In-memory store of conversations per user for fallback summarization
+conversation_store: dict[str, list[list[dict]]] = {}
 
 def add_episode(uid: str, conv: list[dict]) -> str:
     """
@@ -148,6 +152,8 @@ def add_episode(uid: str, conv: list[dict]) -> str:
                 )
                 rel_count += 1
             logger.info(f"Total relationships created for uid={uid}: {rel_count}")
+            # Store conversation for summarization fallback
+            conversation_store.setdefault(uid, []).append(conv)
         return uid
     # Use Graphiti to ingest conversation and extract relationships into Neo4j
     logger.info(f"Using Graphiti ingestion for uid={uid}")
@@ -218,7 +224,7 @@ def get_preferences(uid: str, top_k: int = 5) -> list[str]:
             "MATCH (u:User {uid:$uid})-[:LIKES]->(p:Preference) RETURN p.text AS text LIMIT $k",
             uid=uid, k=top_k,
         )
-        return [record["text"] for record in result]
+        return [record["text"] for record in result] 
 
 # --------------- Additional commented-out preference retrieval strategies ---------------
 # def get_preferences_by_recent_conversations(uid: str, num_conversations: int = 2) -> list[str]:

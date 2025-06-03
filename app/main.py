@@ -12,5 +12,5 @@ from app.routes.summary import router as summary_router
 app = FastAPI(title="Preference Backend")
 
 app.include_router(ingest_router)
-app.include_router(questions_router)
+app.include_router(questions_router) 
 app.include_router(summary_router) 
