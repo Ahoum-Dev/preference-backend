@@ -89,10 +89,27 @@ def add_episode(uid: str, conv: list[dict]) -> str:
                 return uid
             logger.info(f"Sending LLM request to {OPENAI_API_BASE}/chat/completions")
             system_instruction = (
-                "You are a relationship extraction assistant. "
-                "Given the full conversation between 'AI' and 'User', extract all distinct relationships "
-                "the user expresses, including emotions, problems, actions, preferences, and coping strategies. "
-                "Output a JSON array of objects with fields: 'relation', 'object', 'object_type'."
+                                "You are a relationship‑extraction assistant. Given the full conversation between "
+                "'AI' and 'User', extract the user's expressed facts and preferences across **many** "
+                "high‑level dimensions:\n"
+                "  • problem           – the current issue, challenge, or pain point the user mentions\n"
+                "  • religion          – stated or implied spiritual / religious beliefs or affiliations\n"
+                "  • culture           – cultural background, traditions, or values the user identifies with\n"
+                "  • tone              – the overall emotional tone the user conveys (e.g. anxious, optimistic)\n"
+                "  • tone_sensitivity  – how sensitive the user appears to that tone (e.g. highly sensitive, mildly aware)\n"
+                "  • theme_resonance   – topics, metaphors, or themes that visibly resonate with the user\n"
+                "  • preference        – any explicit preference, coping strategy, or desire\n"
+                "\n"
+                "You can also extract other facts and preferences that are not listed here, but only if they are explicitly mentioned in the conversation."
+                "For **each** distinct fact you find, append the  JSON object with these keys:\n"
+                "  \"relation\"    – one of [\"PROBLEM\", \"RELIGION\", \"CULTURE\", \"TONE\", "
+                "\"TONE_SENSITIVITY\", \"THEME_RESONANCE\", \"PREFERENCE\"]\n"
+                "  \"object\"      – the extracted text snippet or a concise phrase capturing the fact\n"
+                "  \"object_type\" – a PascalCase node label to create in Neo4j (use Problem, Religion, "
+                "Culture, Tone, ToneSensitivity, ThemeResonance, Preference respectively)\n"
+                "\n"
+                "Return **one JSON array** (no additional text). Aim for 2‑3 objects per conversation turn, "
+                "but never repeat identical facts. Adhere strictly to only one JSON array."
             )
             chat_payload = {
                 "model": MODEL_NAME,
@@ -135,13 +152,16 @@ def add_episode(uid: str, conv: list[dict]) -> str:
             # Create nodes and relationships based on LLM output
             rel_count = 0
             for rel in rels:
-                # Sanitize relationship type: replace non-alphanumeric with underscore
-                raw_rel = rel.get("relation", "REL")
-                rel_type = re.sub(r"\W+", "_", raw_rel).upper()
-                # Sanitize object label (capitalize, no spaces)
+                # Determine node label and object text
                 raw_obj_type = rel.get("object_type", "Preference")
                 obj_type = raw_obj_type.strip().replace(' ', '_').capitalize()
                 obj = rel.get("object", "")
+                # Determine relationship type, mapping preferences to LIKES
+                if obj_type == "Preference":
+                    rel_type = "LIKES"
+                else:
+                    raw_rel = rel.get("relation", "REL")
+                    rel_type = re.sub(r"\W+", "_", raw_rel).upper()
                 logger.info(f"Creating relationship {uid}-[:{rel_type}]->{obj_type}({obj})")
                 # Merge object node
                 session.run(f"MERGE (o:{obj_type} {{name:$obj}})", obj=obj)
@@ -218,10 +238,10 @@ def get_preferences(uid: str, top_k: int = 5) -> list[str]:
     """
     Retrieve top_k preferences for a user using Graphiti hybrid search recipe.
     """
-    # Fetch preferences from Neo4j
     with driver.session() as session:
+        # Return preference node names via LIKES relationship
         result = session.run(
-            "MATCH (u:User {uid:$uid})-[:LIKES]->(p:Preference) RETURN p.text AS text LIMIT $k",
+            "MATCH (u:User {uid:$uid})-[:LIKES]->(p:Preference) RETURN p.name AS text LIMIT $k",
             uid=uid, k=top_k,
         )
         return [record["text"] for record in result] 
