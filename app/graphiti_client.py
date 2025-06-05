@@ -244,7 +244,53 @@ def get_preferences(uid: str, top_k: int = 5) -> list[str]:
             "MATCH (u:User {uid:$uid})-[:LIKES]->(p:Preference) RETURN p.name AS text LIMIT $k",
             uid=uid, k=top_k,
         )
-        return [record["text"] for record in result] 
+        return [record["text"] for record in result]
+
+async def summarize_conversation(uid: str, conv: list[dict]) -> str:
+    """
+    Summarize the given conversation using LLM.
+    """
+    # Format conversation turns
+    conv_formatted = "\n".join([f"{turn.get('speaker')}: {turn.get('text','')}" for turn in conv])
+    system_prompt = (
+        "You are a helpful assistant that summarizes the following conversation between AI and User concisely. "
+        "Only output the summary."
+    )
+    async with httpx.AsyncClient(timeout=GRAPHITI_LLM_TIMEOUT) as client:
+        chat_payload = {
+            "model": MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": conv_formatted},
+            ],
+            "max_tokens": 256,
+        }
+        try:
+            resp = await client.post(
+                f"{OPENAI_API_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json=chat_payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+        except httpx.HTTPStatusError as err:
+            if err.response.status_code != 404:
+                raise
+        # Fallback to legacy completions endpoint
+        comp_payload = {
+            "model": MODEL_NAME,
+            "prompt": f"{system_prompt}\n\n{conv_formatted}",
+            "max_tokens": 256,
+        }
+        resp2 = await client.post(
+            f"{OPENAI_API_BASE}/completions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            json=comp_payload,
+        )
+        resp2.raise_for_status()
+        comp_data = resp2.json()
+        return comp_data.get("choices", [{}])[0].get("text", "").strip() 
 
 # --------------- Additional commented-out preference retrieval strategies ---------------
 # def get_preferences_by_recent_conversations(uid: str, num_conversations: int = 2) -> list[str]:
