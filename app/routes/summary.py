@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from app.models.summary import SummaryRequest, SummaryOut
 import app.graphiti_client as graphiti_client
 import httpx
+import json
 from loguru import logger
 
 # Shortcut to LLM settings
@@ -26,17 +27,21 @@ async def conversation_summary(payload: SummaryRequest):
                 num_conversations=payload.num_conversations
             )
         else:
-            # Fallback: summarize using LLM and stored conversations
-            convs = graphiti_client.conversation_store.get(payload.uid, [])
+            # Fallback: summarize using LLM and stored conversations in Neo4j
+            with graphiti_client.driver.session() as session:
+                result = session.run(
+                    "MATCH (u:User {uid:$uid})-[:CREATED]->(e:Episode) "
+                    "RETURN e.conversation AS conv_json ORDER BY e.created_at DESC LIMIT $n",
+                    uid=payload.uid, n=payload.num_conversations
+                )
+                convs = [json.loads(record["conv_json"]) for record in result]
             if not convs:
                 summary = f"No conversations found for user {payload.uid}."
             else:
-                # Get last N conversations
-                last_convs = convs[-payload.num_conversations:]
                 # Flatten to text
                 text_blocks = []
-                for conv in last_convs:
-                    lines = [f"{turn['speaker']}: {turn['text']}" for turn in conv]
+                for conv in convs:
+                    lines = [f"{turn.get('speaker')}: {turn.get('text','')}" for turn in conv]
                     text_blocks.append("\n".join(lines))
                 convo_text = "\n\n".join(text_blocks)
                 # Build LLM prompt

@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import httpx
 import json
 import re
+import uuid
 from neo4j import GraphDatabase
 from loguru import logger
 # Attempt to import Graphiti client and LLM client, with stubs if unavailable
@@ -154,7 +155,20 @@ def add_episode(uid: str, conv: list[dict]) -> str:
             logger.info(f"Total relationships created for uid={uid}: {rel_count}")
             # Store conversation for summarization fallback
             conversation_store.setdefault(uid, []).append(conv)
-        return uid
+            # Store raw conversation as backup in Neo4j
+            episode_id = str(uuid.uuid4())
+            conv_json = json.dumps(conv)
+            session.run(
+                "MERGE (e:Episode {id: $episode_id}) "
+                "SET e.conversation = $conv_json, e.created_at = datetime()",
+                episode_id=episode_id, conv_json=conv_json
+            )
+            session.run(
+                "MATCH (u:User {uid: $uid}), (e:Episode {id: $episode_id}) "
+                "MERGE (u)-[:CREATED]->(e)",
+                uid=uid, episode_id=episode_id
+            )
+            return episode_id
     # Use Graphiti to ingest conversation and extract relationships into Neo4j
     logger.info(f"Using Graphiti ingestion for uid={uid}")
     try:
