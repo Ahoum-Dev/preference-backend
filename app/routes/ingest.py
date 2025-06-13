@@ -17,7 +17,7 @@ async def ingest_conversation(payload: ConversationIn):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) 
     
-@router.get("/get_conversations")
+@router.get("/get_conversations" )
 def get_conversations(
     uid: str = Query(..., description="User ID"),
     n: int = Query(1, description="Number of most recent conversations to return")

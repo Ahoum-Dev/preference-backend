@@ -31,37 +31,10 @@ except ImportError:
 NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USER = os.getenv("NEO4J_USER")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
-
-# ---------------------------------------------------------------------------
-# LLM configuration
-# ---------------------------------------------------------------------------
-# Preference-backend supports any OpenAI-compatible endpoint. We look for
-# generic variables first, then fall back to provider-specific names to keep
-# backward compatibility.
-
-###########################################################################
-# GROQ HARDCODED DEFAULTS
-# -------------------------------------------------------------------------
-# If you don't want to rely on environment variables simply put your Groq key
-# directly below and adjust the model name if desired. **Never commit your real
-# production secret to a public repo.** Replace the placeholder with your
-# actual key in your private fork or deployment pipeline.
-###########################################################################
-
-# --- BEGIN HARDCODE SECTION ---
-GROQ_API_BASE = "https://api.groq.com/openai/v1"
-GROQ_MODEL_NAME = "llama3-8b-8192"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-# ---  END  HARDCODE SECTION ---
-
-# Allow env vars to override the hard-coded values (useful for CI/ops), but
-# otherwise fall back to the constants above.
-OPENAI_API_BASE = GROQ_API_BASE
-OPENAI_API_KEY = GROQ_API_KEY
-MODEL_NAME = GROQ_MODEL_NAME
-
+OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+MODEL_NAME = os.getenv("NEBIUS_MODEL_NAME")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME")
-
 GRAPHITI_LLM_TIMEOUT = int(os.getenv("GRAPHITI_LLM_TIMEOUT", "25"))
 
 # Honor USE_GRAPHITI override: set to "false" to disable Graphiti core ingestion and use manual fallback
@@ -311,7 +284,7 @@ async def summarize_conversation(uid: str, conv: list[dict]) -> str:
         )
         resp2.raise_for_status()
         comp_data = resp2.json()
-        return comp_data.get("choices", [{}])[0].get("text", "").strip()
+        return comp_data.get("choices", [{}])[0].get("text", "").strip() 
 
 # --------------- Additional commented-out preference retrieval strategies ---------------
 # def get_preferences_by_recent_conversations(uid: str, num_conversations: int = 2) -> list[str]:
