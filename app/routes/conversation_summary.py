@@ -17,3 +17,6 @@ async def conversation_summary(payload: ConversationIn):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/ping")
+def ping():
+    return {"message": "pong"}

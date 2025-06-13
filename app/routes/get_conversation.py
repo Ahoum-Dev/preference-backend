@@ -34,3 +34,9 @@ def get_conversations(
         if not conversations:
             raise HTTPException(status_code=404, detail="No conversations found for user")
         return {"conversations": conversations} 
+    
+
+
+@router.get("/ping")
+def ping():
+    return {"message": "pong"}
