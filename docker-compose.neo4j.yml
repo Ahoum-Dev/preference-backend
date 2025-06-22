@@ -3,7 +3,7 @@ services:
   neo4j:
     image: neo4j:5
     container_name: neo4j
-    ports:
+    expose:
       - "7687:7687"
       - "7474:7474"
     environment:
